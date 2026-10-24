@@ -1,5 +1,48 @@
 # FluidCloudRedirect Pro - 变更记录
 
+## 1.2.9（真正的元凶：`launcher` 方案拼错了 Intent）
+
+前三版（1.2.6 / 1.2.7 / 1.2.8）都在改判据、改钩子、改校验，但真机上"点了没反应"始终没解决。
+拿到 1.2.8 的完整日志后才定位到：**改写本身是对的，是我们拼出来的那个 Intent 根本无法启动**。
+
+日志里 metis 自己记的失败原因写得很清楚：
+
+```
+fail_reason=No Activity found to handle Intent {
+    act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER]
+    flg=0x14000000 pkg=com.quark.clouddrive }
+```
+
+**原因**：`ACTION_MAIN + CATEGORY_LAUNCHER + setPackage()` 这种隐式意图**启动不了绝大多数第三方 App**。
+Android 的硬性规则是——隐式启动要求目标过滤器带 `CATEGORY_DEFAULT`，而 App 的启动 Activity
+通常只声明 `MAIN + LAUNCHER`，没有 `DEFAULT`。于是出现了一个很迷惑的组合：
+
+| 判据 | 结果 |
+|---|---|
+| `getLaunchIntentForPackage(pkg) != null`（我们的探针） | ✅ 通过（PM 查询不强制 DEFAULT） |
+| 真的 `startActivity(该 Intent)` | ❌ `ActivityNotFoundException`（系统按 DEFAULT 语义解析） |
+
+**探针和真实启动用的不是同一条判据**，所以"校验通过 → 改写成功 → 点了没反应"。
+在任意第三方 App 上都能用一条命令复现：
+
+```sh
+adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p com.quark.clouddrive
+# Error: Activity not started, unable to resolve Intent { … pkg=com.quark.clouddrive }
+
+adb shell am start -n com.quark.clouddrive/com.ucpro.MainActivity
+# Starting: Intent { cmp=com.quark.clouddrive/com.ucpro.MainActivity }   ← 成功
+```
+
+**修法**：`launcher` 方案不再自己拼 Intent，直接用 `getLaunchIntentForPackage` 的返回值——
+它是**显式组件**（`MAIN + LAUNCHER + component=pkg/Activity`），绕开 DEFAULT 限制。
+桌面点图标走的就是这条路径。探针也换成同一个显式意图，让"校验"和"启动"用同一把尺子。
+
+顺带纠正两个此前的错误结论（详见仓库文档 §12–§15）：
+
+- 1.2.6 的"死卡"不是 `PendingIntent` 钩子改坏的——1.2.6 与 1.2.8 的失败日志形态完全一致；
+- 也不是后台启动限制（BAL）：给 metis 加 `SYSTEM_ALERT_WINDOW` appop 后仍然失败，
+  而且同样的失败在 adb shell 里能直接复现，与调用方是谁无关。
+
 ## 1.2.8（放宽启动性判定，避免"认出来了却全判死"）
 
 1.2.7 用同一套判据校验所有改写方案：`resolveActivity` 能解析到具体 Activity，且该 Activity

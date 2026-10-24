@@ -102,13 +102,18 @@ object PackageSwapEngine {
      * 三级降级:
      *  1. keep-data     原始 data 原样给(目标认识这个私有协议时最精确)
      *  2. nested-url    从 ?url= 里挖出真实 https 地址,当普通链接打开(最理想)
-     *  3. launcher      清空 data,ACTION_MAIN + LAUNCHER,只把 App 拉起来
+     *  3. launcher      清空 data,用目标的**入口组件**把 App 拉起来(1.2.9 起改用显式组件,见 launcherPlan)
      *
      * @param preferredUrl 已知的更好落地地址(目前只有"引导安装"路径从剪贴板捞到分享链接时会传)。
      *                     有它时插到最前面,优先级高于上面三级——因为原始 intent 里的 data
      *                     是个 market:// 商店链接,对目标 App 毫无意义。
      */
-    private fun plans(intent: Intent, target: String, preferredUrl: String? = null): List<Plan> {
+    private fun plans(
+        context: Context,
+        intent: Intent,
+        target: String,
+        preferredUrl: String? = null,
+    ): List<Plan> {
         val original = intent.dataString
         return buildList {
             if (preferredUrl != null) {
@@ -158,23 +163,74 @@ object PackageSwapEngine {
                 )
             }
 
-            add(
-                Plan(
-                    label = "launcher",
-                    probe = Intent(Intent.ACTION_MAIN)
-                        .addCategory(Intent.CATEGORY_LAUNCHER)
-                        .setPackage(target),
-                    mutate = {
-                        runCatching { it.categories?.clear() }
-                        it.action = Intent.ACTION_MAIN
-                        it.type = null        // setType 内部会把 data 置空,统一先清 type
-                        it.data = null
-                        it.addCategory(Intent.CATEGORY_LAUNCHER)
-                    },
-                    viaLauncher = true,
-                )
+            add(launcherPlan(context, target))
+        }
+    }
+
+    /**
+     * "只把 App 拉起来"的方案。
+     *
+     * 这里踩过一个影响整条链路的坑(1.2.9 才定案):`ACTION_MAIN + CATEGORY_LAUNCHER + setPackage()`
+     * **启动不了绝大多数第三方 App**。原因是 Android 的硬性规则——隐式启动要求目标过滤器里带
+     * `CATEGORY_DEFAULT`,而 App 的启动 Activity 通常只声明 `MAIN + LAUNCHER`,没有 `DEFAULT`。
+     * 于是出现一个很迷惑的组合:
+     *
+     *  - `PackageManager` 查询能匹配到它(不带 `MATCH_DEFAULT_ONLY` 时),所以
+     *    `getLaunchIntentForPackage(...) != null` 的探针**通过**了;
+     *  - 但 `startActivity` 按 DEFAULT 语义解析,抛 `ActivityNotFoundException:
+     *    No Activity found to handle Intent { act=MAIN cat=[LAUNCHER] pkg=… }`。
+     *
+     * 也就是说:探针和真实启动用的不是同一条判据。1.2.8 之前 launcher 方案正是这么拼出来的,
+     * 所以"校验通过 → 改写成功 → 点了没反应"。`adb shell am start -a MAIN -c LAUNCHER -p <pkg>`
+     * 在任意第三方 App 上都能复现同样的失败,而 `am start -n <pkg>/<Activity>` 立刻成功。
+     *
+     * 正确做法:直接使用 `getLaunchIntentForPackage` 返回的 Intent —— 它是**显式组件**
+     * (`ACTION_MAIN + LAUNCHER + component=pkg/Activity`),绕开 DEFAULT 限制。
+     * 桌面点图标走的也是这条。
+     */
+    private fun launcherPlan(context: Context, target: String): Plan {
+        val launch = runCatching {
+            context.packageManager.getLaunchIntentForPackage(target)
+        }.getOrNull()
+        val component = launch?.component
+        if (launch != null && component != null) {
+            val action = launch.action ?: Intent.ACTION_MAIN
+            val categories = launch.categories?.toList()?.takeIf { it.isNotEmpty() }
+                ?: listOf(Intent.CATEGORY_LAUNCHER)
+            return Plan(
+                label = "launcher:${component.flattenToShortString()}",
+                // 探针用同一个显式意图,判据与真实启动一致
+                probe = Intent(launch).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                mutate = {
+                    it.type = null        // setType 内部会把 data 置空,统一先清 type
+                    it.data = null
+                    it.action = action
+                    runCatching { it.categories?.clear() }
+                    categories.forEach { c -> it.addCategory(c) }
+                    it.component = component
+                },
+                viaLauncher = true,
             )
         }
+        // 极少数拿不到入口的情况:退回老写法(只对声明了 DEFAULT 的应用有效)
+        HookLog.once(
+            "launcher-fallback:$target",
+            "No launch intent for $target; fall back to package-only launcher intent",
+        )
+        return Plan(
+            label = "launcher(pkg-only)",
+            probe = Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .setPackage(target),
+            mutate = {
+                runCatching { it.categories?.clear() }
+                it.action = Intent.ACTION_MAIN
+                it.type = null
+                it.data = null
+                it.addCategory(Intent.CATEGORY_LAUNCHER)
+            },
+            viaLauncher = true,
+        )
     }
 
     /** 在降级链里挑第一个目标 App 接得住的方案 */
@@ -183,7 +239,7 @@ object PackageSwapEngine {
         intent: Intent,
         target: String,
         preferredUrl: String? = null,
-    ): Plan? = plans(intent, target, preferredUrl).firstOrNull { it.resolvable(context, target) }
+    ): Plan? = plans(context, intent, target, preferredUrl).firstOrNull { it.resolvable(context, target) }
 
     /**
      * 兜底修复:包名**已经是替换目标**,但身上带的 data 目标接不住。
@@ -252,7 +308,7 @@ object PackageSwapEngine {
         // 先用副本探测,能解析再改真身——避免改完才发现宿主抛 ActivityNotFoundException
         val tried = ArrayList<String>(3)
         var chosen: Plan? = null
-        for (plan in plans(intent, swap.to)) {
+        for (plan in plans(context, intent, swap.to)) {
             if (plan.resolvable(context, swap.to)) {
                 chosen = plan
                 break
@@ -386,7 +442,7 @@ object PackageSwapEngine {
         from: String,
     ): Boolean {
         val tried = ArrayList<String>(4)
-        for (plan in plans(intent, target, shared)) {
+        for (plan in plans(context, intent, target, shared)) {
             val trial = Intent(intent).apply {
                 component = null
                 selector = null
