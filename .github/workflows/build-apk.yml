@@ -59,17 +59,22 @@ jobs:
 
       # ⚠️ 必须缓存 debug 钥匙，否则**每次构建的签名都不一样**。
       # AGP 发现 ~/.android/debug.keystore 不存在就现场生成一把，而 GitHub runner 每次
-      # 都是全新虚拟机 —— 结果 v1.2.5 和 v1.2.6 的包签名不同，用户无法覆盖安装升级，
-      # 只能卸载重装（配置也会一起没）。实测两个版本的证书 SHA-256：
-      #   v1.2.5 5b4af133…8d455   v1.2.6 52162a0f…ffbae
-      # key 固定不变，第一次构建存下钥匙，后续构建复用。
-      # 注意：cache 连续 7 天不用会被回收，届时签名又会变；彻底解法是配 release keystore。
+      # 都是全新虚拟机 —— 结果每版的包签名都不同，用户无法覆盖安装升级，
+      # 只能卸载重装（LSPosed 激活与配置也一起没）。
+      # 实测过的三个值：v1.2.5 5b4af133… / v1.2.6 5b95cfb7… / v1.2.7 4b49d339…
+      #
+      # 缓存整个 ~/.android 目录而不是单个文件：只缓存文件时实测没生效
+      # （缓存步骤本身 success，但签名仍变），说明落点不止这一个文件名。
+      # key 固定 + key 变更即重新建库；缓存连续 7 天不用会被回收，届时签名又会变。
+      # 彻底解法是配 release keystore（见下），那只钥匙永远不变。
       - name: Cache debug keystore
         if: env.KEYSTORE_B64 == ''
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          path: ~/.android
+          key: android-home-v2
+          restore-keys: |
+            android-home-
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
@@ -112,6 +117,21 @@ jobs:
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
 
+      # 把签名指纹取出来写进 Release 说明：用户和作者都能一眼看出"这次的包能不能覆盖上一版"。
+      # 不用去翻 Actions 日志（那些要登录才能看），Release 页面本身就是公开的凭证。
+      - name: Resolve APK signature
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          APKSIGNER=$(ls -d "$SDK"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          APK=$(ls app/build/outputs/apk/*/*.apk 2>/dev/null | head -1)
+          FP=""
+          if [ -n "$APKSIGNER" ] && [ -n "$APK" ]; then
+            FP=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -m1 'SHA-256 digest' | awk '{print $NF}')
+          fi
+          echo "APK_CERT_SHA256=$FP" >> "$GITHUB_ENV"
+          echo "APK: $APK"
+          echo "cert SHA-256: $FP"
+
       # 打 tag（例如 v1.2.5）推送后，自动把 APK 挂到 Release 上。
       # body 里必须写源码链接：GPL-3.0 §6 要求分发二进制时同时提供对应源码。
       # 不写的话，每个 Release 都得手动补一次，迟早漏。
@@ -140,4 +160,7 @@ jobs:
             修改内容与日期见仓库内 `NOTICE`，逐版变更见 `CHANGELOG-PRO.md`。
 
             > 签名说明：本包与作者本机构建的同版本包签名不同，两者不能互相覆盖安装。
-            > 同一条 CI 流水线出的包自 v1.2.6 起签名固定（钥匙已缓存），可以正常覆盖升级。
+            > 同一条 CI 流水线出的包自 v1.2.7 起签名固定（钥匙已缓存），可以正常覆盖升级。
+            >
+            > 本包签名证书 SHA-256：`${{ env.APK_CERT_SHA256 }}`
+            > 升级前可对照上一版 Release 里的这一行：相同就能直接覆盖安装。
