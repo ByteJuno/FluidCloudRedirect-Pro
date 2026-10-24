@@ -64,12 +64,16 @@ jobs:
       # 单纯缓存 ~/.android 无效：AGP 在 runner 上并不用那个位置，
       # 缓存下来只有 365 字节（几乎空目录），钥匙压根没被保存。
       # 所以改成：工作区内固定路径 + 由本 workflow 生成 + 显式传给 Gradle（DEBUG_KEYSTORE）。
-      - name: Cache debug keystore
+      # 关键点：cache 是按 ref 分作用域的。若让每个 tag 各自 save，就会出现
+      # "main 一把、v1.2.7 一把、v1.2.8 又去读 main 那把"的错位，签名照样每版都变。
+      # 所以拆成 restore / save 两步：所有 ref 都从默认分支还原，且只有 main 允许保存，
+      # 全局只有一把 debug 钥匙。
+      - name: Restore debug keystore
         if: env.KEYSTORE_B64 == ''
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ci-debug
-          key: debug-keystore-v3
+          key: debug-keystore-v4
 
       - name: Prepare debug keystore
         if: env.KEYSTORE_B64 == ''
@@ -88,7 +92,16 @@ jobs:
             echo "cached keystore found; reusing it"
           fi
           echo "DEBUG_KEYSTORE=$KS" >> "$GITHUB_ENV"
-          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null | grep -m1 'SHA-256:' || true
+          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null | grep -m1 'SHA256:' || true
+
+      # 只在默认分支保存。key 已存在时 save 可能报冲突，但那不影响构建结果，故 continue-on-error。
+      - name: Save debug keystore
+        if: env.KEYSTORE_B64 == '' && github.ref_name == 'main'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ci-debug
+          key: debug-keystore-v4
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
