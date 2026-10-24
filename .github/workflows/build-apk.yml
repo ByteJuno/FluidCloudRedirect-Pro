@@ -57,6 +57,20 @@ jobs:
           sdkmanager --sdk_root="$SDK" --install "platforms;android-37.0" "build-tools;37.0.0"
           sdkmanager --sdk_root="$SDK" --list_installed
 
+      # ⚠️ 必须缓存 debug 钥匙，否则**每次构建的签名都不一样**。
+      # AGP 发现 ~/.android/debug.keystore 不存在就现场生成一把，而 GitHub runner 每次
+      # 都是全新虚拟机 —— 结果 v1.2.5 和 v1.2.6 的包签名不同，用户无法覆盖安装升级，
+      # 只能卸载重装（配置也会一起没）。实测两个版本的证书 SHA-256：
+      #   v1.2.5 5b4af133…8d455   v1.2.6 52162a0f…ffbae
+      # key 固定不变，第一次构建存下钥匙，后续构建复用。
+      # 注意：cache 连续 7 天不用会被回收，届时签名又会变；彻底解法是配 release keystore。
+      - name: Cache debug keystore
+        if: env.KEYSTORE_B64 == ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
@@ -64,7 +78,9 @@ jobs:
       - name: Unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
+      # 配了 release keystore 就只出 release 包，避免同一页面挂着两个签名不同的 APK
       - name: Assemble debug APK
+        if: env.KEYSTORE_B64 == ''
         run: ./gradlew --no-daemon assembleDebug
 
       # ---- 以下为可选的 release 签名 ----
@@ -108,7 +124,7 @@ jobs:
           body: |
             ## 安装
 
-            1. 下载 `app-debug.apk` 安装（需已装好并启用 LSPosed）
+            1. 下载本页附件里的 APK 安装（需已装好并启用 LSPosed）
             2. LSPosed 中启用本模块，作用域勾选「智慧决策服务」（`com.oplus.metis`）
             3. **停一次 `com.oplus.metis` 或重启手机**，钩子才会加载
             4. 设置页选一个浏览器；「应用替换」里填 `com.quark.browser → com.quark.clouddrive`，
@@ -123,5 +139,5 @@ jobs:
             的衍生作品，**不是原作者发布的版本**，原作者不对本版本提供支持或背书。
             修改内容与日期见仓库内 `NOTICE`，逐版变更见 `CHANGELOG-PRO.md`。
 
-            > 签名说明：未配置 release keystore 时这里是 debug 签名，与作者本机构建的包签名不同，
-            > 两个来源的包不能互相覆盖安装。
+            > 签名说明：本包与作者本机构建的同版本包签名不同，两者不能互相覆盖安装。
+            > 同一条 CI 流水线出的包自 v1.2.6 起签名固定（钥匙已缓存），可以正常覆盖升级。
