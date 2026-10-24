@@ -342,35 +342,82 @@ object PackageSwapEngine {
                         continue
                     }
                     HookLog.card(
-                        "install-prompt[$source]: ${swap.from} missing, redirect to ${swap.to}; " +
+                        "install-prompt[$source]: ${swap.from} missing, try redirect to ${swap.to}; " +
                             IntentInspector.describe(intent)
                     )
                     val shared = ClipboardShare.findUrl(context)
                     if (shared != null) {
                         HookLog.log("install-prompt[$source]: clipboard still holds a share link, use it")
                     }
-                    val plan = pickPlan(context, intent, swap.to, shared) ?: run {
-                        HookLog.once(
-                            "install-unresolved:${swap.to}",
-                            "Install-prompt redirect failed: ${swap.to} unreachable; skip",
-                        )
-                        return false
-                    }
-                    intent.component = null
-                    intent.selector = null
-                    plan.mutate(intent)
-                    intent.setPackage(swap.to)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    HookLog.log(
-                        "Redirected install-prompt ${swap.from} -> ${swap.to}, via=$source, " +
-                            "plan=${plan.label}, action=${intent.action}, data=${intent.dataString}"
-                    )
-                    return true
+                    return applyVerified(context, intent, swap.to, shared, source, swap.from)
                 }
             }
         }
         return false
     }
+
+    /**
+     * 逐个方案试改,每个都先在**副本**上校验"真的能解析到一个可启动的 Activity",通过了才动真身。
+     *
+     * 为什么必须逐级校验:1.2.6 直接改真身,结果改写出来的意图启动失败,
+     * metis 抛 ActivityNotFoundException 后自己吞掉,用户看到的是"点击完全没反应"——
+     * 比原来跳应用商店更糟,而且日志里只有一行"已改写",看不出问题。
+     *
+     * 校验两项:
+     *  1. `resolveActivity` 能解析到具体 Activity(不是 null);
+     *  2. 该 Activity 是 exported 的(非导出组件从外部 startActivity 会被拒)。
+     *
+     * 全部方案都不合格时返回 false,调用方会原样放行 —— 卡片退回改造前的行为,
+     * 而不是变成一张点不动的死卡。
+     */
+    private fun applyVerified(
+        context: Context,
+        intent: Intent,
+        target: String,
+        shared: String?,
+        source: String,
+        from: String,
+    ): Boolean {
+        val tried = ArrayList<String>(4)
+        for (plan in plans(intent, target, shared)) {
+            val trial = Intent(intent).apply {
+                component = null
+                selector = null
+                plan.mutate(this)
+                setPackage(target)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val activityInfo = runCatching {
+                context.packageManager.resolveActivity(trial, 0)?.activityInfo
+            }.getOrNull()
+            if (activityInfo == null) {
+                tried += "${plan.label}(unresolved)"
+                continue
+            }
+            if (!activityInfo.exported) {
+                tried += "${plan.label}(not exported: ${activityInfo.packageName}/${activityInfo.name})"
+                continue
+            }
+
+            intent.component = null
+            intent.selector = null
+            plan.mutate(intent)
+            intent.setPackage(target)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            HookLog.log(
+                "Redirected install-prompt $from -> $target, via=$source, plan=${plan.label}, " +
+                    "activity=${activityInfo.packageName}/${activityInfo.name}, " +
+                    "action=${intent.action}, data=${intent.dataString}"
+            )
+            return true
+        }
+        HookLog.log(
+            "install-prompt[$source]: no usable plan for $target, keep original behaviour; " +
+                "tried ${tried.joinToString()}"
+        )
+        return false
+    }
+
 
     /** 收集 Intent 里所有可能承载包名的文本(clipData + extras),用于识别引导安装意图 */
     private fun intentBlobs(intent: Intent, limit: Int = 12): List<String> {

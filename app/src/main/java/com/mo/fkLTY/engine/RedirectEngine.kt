@@ -44,6 +44,15 @@ object RedirectEngine {
         if (PackageSwapEngine.redirectInstallPrompt(context, intent, prefs, source)) return true
 
         val data = intent.dataString
+
+        // 诊断:目标是应用商店,却没提到任何源包名 —— 说明 metis 用的是别的标识方式
+        // (内部商品 id、oaps:// 载荷等),我们的匹配永远命中不了。把真实意图留痕,
+        // 免得下一次还是靠猜。
+        val hasSwaps = PackageSwapEngine.load(prefs).any { it.enabled }
+        if (hasSwaps && (StoreLink.isStorePackage(pkg) || StoreLink.isStoreScheme(intent.data?.scheme))) {
+            HookLog.card("store-intent[$source]: " + IntentInspector.describe(intent))
+        }
+
         // 便宜的预筛,避免对每一次 startActivity 都跑完整解析:
         // http(s) 直链、heytapbrowser:// 协议卡、以及 qklink:// 这类把地址藏在 url= 参数里的包装协议
         val hasWebData = data != null && (
