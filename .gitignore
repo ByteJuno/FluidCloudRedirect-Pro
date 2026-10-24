@@ -20,3 +20,6 @@ app/release.keystore
 
 # 本地重要资料存档(逆向分析文档,不上传)
 重要文件/
+
+# CI 生成的 debug 钥匙目录（仅存在于 GitHub runner，永不入库）
+.ci-debug/

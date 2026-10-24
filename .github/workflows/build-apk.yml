@@ -57,24 +57,38 @@ jobs:
           sdkmanager --sdk_root="$SDK" --install "platforms;android-37.0" "build-tools;37.0.0"
           sdkmanager --sdk_root="$SDK" --list_installed
 
-      # ⚠️ 必须缓存 debug 钥匙，否则**每次构建的签名都不一样**。
-      # AGP 发现 ~/.android/debug.keystore 不存在就现场生成一把，而 GitHub runner 每次
-      # 都是全新虚拟机 —— 结果每版的包签名都不同，用户无法覆盖安装升级，
-      # 只能卸载重装（LSPosed 激活与配置也一起没）。
-      # 实测过的三个值：v1.2.5 5b4af133… / v1.2.6 5b95cfb7… / v1.2.7 4b49d339…
+      # ⚠️ 必须让 debug 钥匙库在多次构建之间保持同一把，否则**每版签名都不同**，
+      # 用户无法覆盖安装升级，只能卸载重装（LSPosed 激活与配置也一起没）。
+      # 实测过的指纹：v1.2.5 5b4af133… / v1.2.6 5b95cfb7… / v1.2.7(首版) 4b49d339…
       #
-      # 缓存整个 ~/.android 目录而不是单个文件：只缓存文件时实测没生效
-      # （缓存步骤本身 success，但签名仍变），说明落点不止这一个文件名。
-      # key 固定 + key 变更即重新建库；缓存连续 7 天不用会被回收，届时签名又会变。
-      # 彻底解法是配 release keystore（见下），那只钥匙永远不变。
+      # 单纯缓存 ~/.android 无效：AGP 在 runner 上并不用那个位置，
+      # 缓存下来只有 365 字节（几乎空目录），钥匙压根没被保存。
+      # 所以改成：工作区内固定路径 + 由本 workflow 生成 + 显式传给 Gradle（DEBUG_KEYSTORE）。
       - name: Cache debug keystore
         if: env.KEYSTORE_B64 == ''
         uses: actions/cache@v4
         with:
-          path: ~/.android
-          key: android-home-v2
-          restore-keys: |
-            android-home-
+          path: ${{ github.workspace }}/.ci-debug
+          key: debug-keystore-v3
+
+      - name: Prepare debug keystore
+        if: env.KEYSTORE_B64 == ''
+        run: |
+          KS="$GITHUB_WORKSPACE/.ci-debug/debug.keystore"
+          mkdir -p "$GITHUB_WORKSPACE/.ci-debug"
+          if [ ! -f "$KS" ]; then
+            echo "no cached keystore; generating a new one (only this run changes the signature)"
+            keytool -genkeypair -v \
+              -keystore "$KS" \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          else
+            echo "cached keystore found; reusing it"
+          fi
+          echo "DEBUG_KEYSTORE=$KS" >> "$GITHUB_ENV"
+          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null | grep -m1 'SHA-256:' || true
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
@@ -160,7 +174,8 @@ jobs:
             修改内容与日期见仓库内 `NOTICE`，逐版变更见 `CHANGELOG-PRO.md`。
 
             > 签名说明：本包与作者本机构建的同版本包签名不同，两者不能互相覆盖安装。
-            > 同一条 CI 流水线出的包自 v1.2.7 起签名固定（钥匙已缓存），可以正常覆盖升级。
             >
             > 本包签名证书 SHA-256：`${{ env.APK_CERT_SHA256 }}`
-            > 升级前可对照上一版 Release 里的这一行：相同就能直接覆盖安装。
+            >
+            > 升级前对照上一版 Release 里的这一行：**相同就能直接覆盖安装**，
+            > 不同则需先卸载（LSPosed 激活与配置要重配一次）。

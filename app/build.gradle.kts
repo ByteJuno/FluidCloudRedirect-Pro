@@ -12,6 +12,19 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+/**
+ * CI 用:通过环境变量显式指定 debug 钥匙库。
+ *
+ * 为什么需要:AGP 默认把 debug 钥匙放在"Android 用户目录"下,而这个位置随环境变化。
+ * 实测在 GitHub runner 上并不在 `~/.android`,于是 workflow 里缓存 `~/.android` 缓存到的是
+ * 一个几乎空的目录(365 字节),钥匙根本没被保存 —— 表现就是"每次构建签名都不一样",
+ * 用户无法覆盖安装升级。
+ *
+ * 这里把路径改成由 workflow 显式提供并缓存,生成与复用都由 CI 自己控制,
+ * 不再依赖 AGP 猜位置。本地构建不设该变量,行为完全不变。
+ */
+val debugKeystoreEnv = System.getenv("DEBUG_KEYSTORE")?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.mo.fkLTY"
     compileSdk {
@@ -35,6 +48,18 @@ android {
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    // CI 显式指定 debug 钥匙库时改用它(本地不设 DEBUG_KEYSTORE,故此段不生效)
+    if (debugKeystoreEnv != null && rootProject.file(debugKeystoreEnv).exists()) {
+        signingConfigs {
+            getByName("debug") {
+                storeFile = rootProject.file(debugKeystoreEnv)
+                storePassword = System.getenv("DEBUG_KEYSTORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("DEBUG_KEYSTORE_ALIAS") ?: "androiddebugkey"
+                keyPassword = System.getenv("DEBUG_KEYSTORE_PASSWORD") ?: "android"
             }
         }
     }
