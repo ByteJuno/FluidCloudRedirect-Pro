@@ -1,0 +1,46 @@
+FluidCloudRedirect Pro — 归属与修改声明
+=======================================
+
+本程序是 FluidCloudRedirect 的衍生作品(derivative work)。
+
+原项目
+------
+  名称      FluidCloudRedirect(流体云重定向)
+  作者      wangliaoqiongchen
+  仓库      https://github.com/wangliaoqiongchen/FluidCloudRedirect
+  许可证    GNU General Public License v3.0(全文见本目录 LICENSE)
+  版权      Copyright (c) 2026 wangliaoqiongchen
+
+修改声明(GPLv3 §5(a):必须显著标注修改内容与日期)
+--------------------------------------------------
+  修改者    bamizi(https://github.com/bamizi)
+  起算日期  2026-10-24
+  基线版本  上游 v1.0.2(commit 见本仓库 git log 中上游提交)
+  当前版本  1.2.5
+
+  主要修改:
+    1. 新增「自定义 URL → App 跳转规则」:域名(含子域名)/ URL 包含 / 正则三种匹配,
+       可设优先级、启停,可指定目标包名与可选 Deep Link 模板({url} {url_raw} {host} {path})。
+       **[1.2.2 已整条移除,见第 8 条]**
+    2. 修复上游 1.1.0 预览版无法编译的问题(CustomRulesEditor 错误的
+       androidx.compose.foundation.layout.weight 导入)。
+    3. 修复 ReflectedTextIntent.setPackageName 使用 ?: 判断 setter 返回值导致的逻辑错误。
+    4. 修复 BrowserAvailability.isBrowserPackage 在 Android 10~12 上因 ResolveInfoFlags
+       不可用而静默失效的问题(minSdk=29)。
+    5. 自定义规则改写 Intent 前增加「目标 App 是否能接收该 URI」探测,不可接收则回退,
+       避免宿主 startActivity 抛 ActivityNotFoundException 造成"点了没反应"。
+    6. 使用独立的 applicationId 与 LSPosed module id,可与上游版本共存、互不覆盖。
+    7. 新增 GitHub Actions 构建工作流;verifyXposedMetadata 覆盖 release 变体。
+    8. (1.2.2,2026-10-24) 应实际使用场景,移除第 1 条引入的「自定义 URL → App 跳转规则」
+       及其配套代码(RedirectRule/RuleMatcher、规则编辑器、规则自检弹窗、自定义规则偏好项),
+       设置页不再提供该入口。同时新增「应用替换」能力:按目标包名把卡片改投另一个 App,
+       并对其 Intent 采用三级降级改写(keep-data → nested-url → launcher);
+       新增包装型私有协议内嵌地址解析(qklink:// 等)。
+
+许可与再分发
+------------
+  本衍生作品整体以 GPL-3.0 发布(§5(c))。任何人分发本程序的二进制(APK)时,必须同时
+  提供或指向对应的完整源码,并保留本文件、LICENSE 与全部版权声明。
+
+  本版本不是原作者发布的版本,原作者不对本版本提供支持、担保或背书。
+  请勿以原作者名义发布本版本的 APK。

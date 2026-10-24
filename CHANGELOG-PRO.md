@@ -1,0 +1,202 @@
+# FluidCloudRedirect Pro - 变更记录
+
+## 1.2.5（署名落定）
+
+- `NOTICE` 的修改者、`README` 的 Modifications Copyright 填入实际维护者 `bamizi`。
+- `module.prop` 的 `author` 由通用占位改成 `bamizi · 原作 fkLTY`，LSPosed 模块列表里能直接看到
+  修改者是谁，同时原作者署名不丢。
+
+## 1.2.4（发布整理：元数据与 CI）
+
+准备公开仓库时发现的三处问题，都在发布前修掉：
+
+- `module.prop` 的 `author` 还写着上游作者 `fkLTY`，LSPosed 模块列表会原样显示，
+  等于把修改版标成了原作者出品。改为 `第三方修改版 · 原作 fkLTY`，
+  原作者信息仍保留在 NOTICE / LICENSE / README 中。
+- `module.prop` 的 `description` 还在宣传 1.2.2 已删除的「正则匹配 / Deep Link 模板」，
+  改为当前真实功能（浏览器接管网页卡片 + 应用替换）。
+- `.github/workflows/build-apk.yml`：release 签名步骤的 `if: ${{ secrets.X != '' }}` 不成立——
+  GitHub Actions 的 `secrets` 上下文在 step 级 `if` 里不可用，条件恒为假，release 包永远打不出来。
+  改为经 job 级 `env` 中转，再用 `if: env.KEYSTORE_B64 != ''` 判断。
+- `gradlew` 在仓库里补上可执行位（100755），免得别人克隆到 Linux/macOS 后要手动 chmod。
+
+## 1.2.3（关于卡改成"怎么用"）
+
+原来的关于卡是一整段原理说明（卡片执行层、LSPosed 远程偏好、`:text_intent` 进程……），
+用户看完仍不知道自己该点哪里，而新加的「应用替换」在里面一个字都没提。重写：
+
+- 一句话说明 + 两条用法（网页卡片选浏览器 / 复制口令配应用替换）+ 一条生效提示，
+  用圆点列表排版，比纯段落更容易扫读。
+- 复制口令那条直接给了可照抄的例子：`com.quark.browser → com.quark.clouddrive`。
+- 补上原先完全没说的前提：**首次安装或升级后要停一次 `com.oplus.metis`（或重启）**，
+  否则钩子还是旧的——这是最容易踩的坑，之前只写在 README 里。
+- 文案拆成 `about_intro` / `about_usage_browser` / `about_usage_swap` / `about_note`
+  四条资源，`values-en` 同步更新，删掉旧的 `about_body`。
+
+## 1.2.2（精简：移除未使用的「自定义 App 跳转规则」）
+
+实用场景确定后，URL 规则这条线用不上（真正管用的是「应用替换」），设置页留着只会让人
+以为还需要配它。整条链一起删掉，不是只藏 UI：
+
+- 删除设置页「自定义 App 跳转规则」区块。
+- 删除 `RedirectRule` / `RuleMatcher`（规则模型与匹配）、`RuleDiagnostics`（规则自检）、
+  `RuleTestDialog`、`CustomRulesEditor`，以及对应单测 `CustomRedirectRuleTest`。
+- `RedirectEngine` 判定链简化为 **应用替换 → 原有浏览器规则**，不再读取自定义规则。
+  顺手去掉不再使用的 `BrowserAvailability.canHandle()` / `handlersFor(uri)`。
+- `RedirectPrefs.KEY_CUSTOM_RULES`、`PrefsBridge.saveCustomRules()`、
+  `PickerViewModel.customRules/saveCustomRules` 一并移除。
+- 未做迁移：已存在的 `custom_redirect_rules_v1` 键不再被读取，属于无害的孤立偏好项，
+  不影响任何行为。这样处理是刻意的——设置页已经没有入口，若引擎仍偷偷读它，
+  用户将无法查看或删除一条正在生效的规则。
+
+保留 `Policy` 的四条浏览器规则开关（协议卡 / 文字搜索 / heytap 网页卡 / 任意浏览器卡），
+它们与「应用替换」是两件事。单测 24 个全绿（PolicyTest 23 + ExampleUnitTest 1）。
+
+## 1.2.1（修复：私有协议卡片导致应用替换被跳过）
+
+真机日志（1.2.0，`text_intent` 进程）拿到了第一条完整链路：
+
+```
+card[invoke]: textType=17, pkg=com.quark.browser,
+  data=qklink://www.uc.cn/b20b84fd735a8dd3f7541129bacc4e9a?action=open_url&url=https%3a%2f%2fpan.quark.cn%2fs%2febb0e2cb19e0
+Swap target com.quark.clouddrive cannot handle this intent; skip
+custom[invoke]: card carries no http(s) url, skip custom rules
+```
+
+两个缺陷都在这一张卡上：
+
+1. **替换被"目标接不住"误判**。探测时把原始 `data` 一起带过去问"夸克网盘认不认",
+   网盘不认 `qklink://`,于是整条规则放弃。实际上网盘认 `https://pan.quark.cn/…`,
+   而且再不济把它拉起来也能自己读剪贴板。1.2.0 只有"能接住 / 放弃"两档，缺了降级。
+2. **URL 规则永远看不到真实地址**。`qklink://` 不是 http(s)，被判成"卡片没有网址"，
+   于是同一张卡上的 URL 规则、自检、日志全部瞎掉。
+
+修复：
+
+- `PackageSwapEngine` 改为**三级降级**，逐级探测，第一个能被目标接住的就用：
+  1. `keep-data`：原始 data 原样给（目标认识该私有协议时最精确）；
+  2. `nested-url`：从 `?url=` 参数挖出真实 https 地址，当普通链接打开（最理想）；
+  3. `launcher`：清空 data 与 categories，`ACTION_MAIN` + `CATEGORY_LAUNCHER` 只拉起 App。
+  日志会打印实际用了哪一级、跳过了哪几级。
+- 新增 `Policy.extractNestedUrl()`：任意包装型 URI 的 query 里挖内嵌 http(s) 地址，
+  支持百分号编码与双重编码；参数名白名单（`url` / `u` / `link` / `target` / `jumpurl` …）
+  优先，其余参数只要值是合法 http(s) 也接受。
+- `Policy.extractHttpUrl()` 改为 `http(s) → heytapbrowser://webpage?url= → 通用挖取`
+  三段式，是旧行为的严格超集。`Policy.evaluate()` 的规则 1 语义**未改动**。
+- `IntentInspector` 对 `clipData` / `extras` 文本先尝试整体百分号解码再匹配，
+  覆盖"值被整段编码"的卡片。
+- 新增 `PackageSwapEngine.repairIfNeeded()`，在 `ContextImpl.startActivity` 出口兜底：
+  若包名**已经是替换目标**、但身上 data 目标接不住（metis 用 `bean.packageName`
+  重建 Intent 并贴回原始 data 的情况），就地重新降级修复，避免
+  `ActivityNotFoundException` 表现为"点了没反应"。
+- `RedirectEngine.applyToIntent()` 的廉价预筛增加 `data.contains("url=")`，
+  让 `qklink://` 这类包装协议也能进入判定（此前会被直接放过）。
+- 设置页「应用替换」提示改为说明三级降级行为。
+- 新增 7 个单测，覆盖 `qklink://` 取内嵌地址、双重编码、无白名单参数名、
+  非 http 内嵌值不采纳、`extractHttpUrl` 三段式。
+
+**订正**：1.1.4 条目里"本机型流体云卡片不经过 `TextIntent.invoke`"的结论是错的。
+那次日志里没有任何 `card[...]` 记录，真实原因是当时装的 1.1.3 还没有 `HookLog.card()`、
+且「详细日志」开关从未打开。1.2.0 的日志已证明 `invoke reached` 与 `card[invoke]` 正常触发。
+
+## 1.2.0（应用替换：支持「复制口令」卡片）
+
+需求澄清后的正确解法。用户场景不是网页链接,而是 **智慧文本服务 → 复制口令**:
+口令卡里没有网址,metis 直接认定"这段口令属于夸克",把目标包名写死成 `com.quark.browser`。
+按 URL 匹配永远不可能命中,必须按**目标包名**替换。
+
+- 新增「应用替换」规则:`A(原本要打开的) → B(改成打开的)`,独立于 URL 规则。
+  典型配置:`com.quark.browser` → `com.quark.clouddrive`。
+- 新增 `PackageSwapEngine`:带 JSON 缓存(避免每次 startActivity 重复解析);
+  改写前用 Intent 副本探测目标是否可解析,不可解析则原样放行;
+  无 data 的 Intent 自动转成 `ACTION_MAIN` + `CATEGORY_LAUNCHER` 拉起目标 App;
+  保留原有 extras,口令仍由目标 App 自己从剪贴板/参数解析。
+- 新增设置页「应用替换（复制口令）」区块,支持从已安装应用中选择 A/B。
+- `ContextImpl.startActivity` 兜底 hook 不再前置过滤 http,改为交给引擎判定
+  (带网页数据 或 目标包在替换表里),否则会漏掉"没有网址只有目标包"的口令卡片。
+
+## 1.1.4（兜底启动 hook）
+
+日志取证结论：本机型上流体云卡片**不经过 `TextIntent.invoke`**。四个原 hook 均已安装
+（两次重启进程各装一次），但两个会话的模块日志里没有任何一次 `card[...]` / `Redirected` /
+`Custom redirect` 记录，说明卡片点击走的是别的路径。
+
+- 新增 `StartActivityHooker`：hook `ContextImpl.startActivity(Intent)` 与
+  `(Intent, Bundle)`，在"metis 真正发出跳转"这一步兜住。仅当 Intent 带
+  http(s)/heytapbrowser 数据时才处理，命中规则才改写，其余一律原样放行。
+- 兜底 hook 安装在**所有** `com.oplus.metis:*` 进程（不再只限 `:text_intent`）。
+- `RedirectEngine` 重构为 `apply()`（bean 入口）与 `applyToIntent()`（Intent 入口）共用同一套判定。
+- 新增 `HookLog.card()`：取证日志不再依赖「详细日志」开关（本次日志证明该开关当时是关的，
+  导致什么都看不到），每进程限额 40 条防刷。
+- `RedirectHooker` 入口无条件留痕，用 `invoke reached` 判断主 hook 是否真的被调用。
+
+## 1.1.3（卡片取证 + URL 提取兜底）
+
+- 新增 `IntentInspector`：详细日志会把整张卡片的 Intent 压成一行输出
+  （action / package / component / data / flags / clipData / extras），
+  用于判断"这张卡到底是不是网页卡片、地址存在哪里"。
+- URL 提取不再只看 `dataString`：依次尝试 `dataString` → `clipData` → `extras`，
+  覆盖把地址塞在 extra 里的卡片类型。
+- 未命中时也留痕：`no rule matched` / `card carries no http(s) url` /
+  `browser redirection disabled` 都会在详细日志中给出，不再是"静默不动"。
+
+## 1.1.2（新增规则自检）
+
+- **新增「规则自检」**：自定义规则卡片上多了「自检」按钮，输入一条真实链接即可看到
+  逐层结论：命中哪条规则 → 目标是否安装 → 构造出的目标 URI → 目标能否接收 →
+  系统上哪些包能开这个 URI → 对目标包逐个探测常见 scheme（✓/✗）→ 一目了然的结论。
+  支持「直接试跳一次」，把系统抛出的真实异常打印出来。
+  解决的问题：自定义规则失败时，「没命中 / 目标没装 / 目标不认这个 URI」三种情况的
+  现象都是"还是原来的浏览器"，肉眼无法区分。
+- 自定义规则改写时补 `FLAG_ACTIVITY_NEW_TASK`：宿主若从非 Activity 上下文发起
+  `startActivity`，缺这个 flag 会抛 `AndroidRuntimeException`。
+- 文档更正：夸克系有两个包名，`com.quark.clouddrive` 是夸克网盘独立版（2026-02 起），
+  `com.quark.browser` 是夸克主 App。README 的示例已修正。
+
+## 1.1.1（修复版，基于 1.1.0 预览版）
+
+> 说明：1.1.0 为提交时未经编译验证的预览版，**无法编译**。本版为实际可构建版本。
+
+### 阻断性问题修复
+
+- **修复编译失败**：`CustomRulesEditor.kt` 导入了 `androidx.compose.foundation.layout.weight`，
+  该符号在 Compose 中是 `RowScope/ColumnScope` 的成员，导入会命中内部声明，
+  编译报错 `Cannot access 'val RowColumnParentData?.weight: Float': it is internal in file`。已删除该导入。
+- **修复 `ReflectedTextIntent.setPackageName` 的分支判断**：`Method.invoke` 对返回 void 的
+  setter 恒返回 `null`，原来用 `?:` 判断会把每次调用都落到字段反射分支。改为显式 `if/else`。
+- **修复 Android 10~12 上规则 4 静默失效**：`BrowserAvailability.isBrowserPackage` 在
+  `SDK_INT < 33` 时也调用了 `ResolveInfoFlags`，抛 `NoSuchMethodError` 后被 catch 吞掉，
+  结果恒为 `false`。已按 SDK 版本分支。
+
+### 行为与健壮性
+
+- 自定义规则改写 Intent 前，先探测目标 App 是否真能接收该 URI；不能接收则记日志并回退到
+  浏览器规则，避免宿主 `startActivity` 抛 `ActivityNotFoundException`（表现为卡片点了没反应）。
+- 自定义规则命中但目标包未安装 / URI 构造失败 / 目标不认该 scheme 时，均记一次性日志并回退，
+  不再静默。
+- `RedirectEngine` 拆出 `tryCustomRule()`，自定义规则与浏览器规则的优先级关系显式化为返回值。
+
+### 工程与发布
+
+- `applicationId` 改为 `com.mo.fkLTY.pro`，LSPosed 模块 `id` 改为 `fkLTY_pro`：
+  可与上游原版共存，避免同包不同签名的安装冲突、以及两个模块在 LSPosed 中互相覆盖。
+  ⚠️ 请勿同时启用原版与本版，两者会 hook 同一方法。
+- `verifyXposedMetadata` 改为扫描 `outputs/apk` 下所有 APK，`assembleRelease` 同样过闸。
+- 新增 `.github/workflows/build-apk.yml`：push / PR / 手动触发构建，打 tag 自动挂 Release。
+- 新增 `NOTICE`：GPL-3.0 要求的修改声明与归属信息；README 顶部加衍生版本声明。
+- 同步 `strings.xml` 的 `app_name` / `xposed_description` 与 `module.prop` 口径。
+
+### 验证状态
+
+- 已在本机 JDK 25 + Gradle 9.5.0 + AGP 9.3.3 + compileSdk 37 完成 `assembleDebug` 构建，
+  `verifyXposedMetadata` 通过。
+- **未在真机（一加 15 / ColorOS / LSPosed）验证跳转效果**，仍需设备端确认。
+
+## 1.1.0（预览版，无法编译）
+
+- 新增按 URL 匹配的自定义 App 重定向规则。
+- 支持域名（含子域名）、URL 包含、正则表达式匹配。
+- 支持规则优先级、启用/停用、编辑和删除。
+- 支持指定目标包名和可选 Deep Link 模板：`{url}`、`{url_raw}`、`{host}`、`{path}`。
+- 自定义规则优先于原有浏览器重定向；未命中时保留原行为。
+- 原有 LSPosed Hook 入口、作用域、远程偏好组和三层 Hook 保持不变。
