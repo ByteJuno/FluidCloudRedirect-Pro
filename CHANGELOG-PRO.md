@@ -1,5 +1,25 @@
 # FluidCloudRedirect Pro - 变更记录
 
+## 1.2.8（放宽启动性判定，避免"认出来了却全判死"）
+
+1.2.7 用同一套判据校验所有改写方案：`resolveActivity` 能解析到具体 Activity，且该 Activity
+是 `exported`。问题在于 **`resolveActivity` 对隐式意图存在假阴性**——解析不到不等于启动不了。
+一旦剪贴板方案、原始 data、内嵌地址、启动 App 这四级被全判死，`applyVerified` 返回 false，
+卡片退回"跳商店"：现象和没修一样，只是日志里多一行 `no usable plan`。
+
+改成按方案性质分别判断：
+
+- **`launcher`（只把 App 拉起来）**：用 `getLaunchIntentForPackage`。1.2.5 起一直在用它，
+  不受 Android 11+ 包可见性影响。
+- **带 data 的方案**：先 `resolveActivity` + `exported`（能拿到具体组件就用它）；
+  解析不到时再用 `queryIntentActivities` 兜一次——目标包里真有能接住该意图的组件也算过关。
+
+两条判据都只认"目标里确实存在接收者"，不会凭空放行，所以这次放宽**不会**重新引入死卡
+（1.2.6 → 1.2.7 修的正是死卡）。
+
+未变的部分：识别（`StoreLink`）、剪贴板补偿（`ClipboardShare`）、钩子集合（仍是 1.2.5 的五个钩）。
+卡片文字仍是 metis 渲染的"去安装夸克"，模块只改点击目标，改不了文字。
+
 ## 1.2.7（修 1.2.6 引入的"点击无反应"）
 
 1.2.6 装到真机后，卡片仍然显示"去安装夸克"，但**点击完全没有反应**了——

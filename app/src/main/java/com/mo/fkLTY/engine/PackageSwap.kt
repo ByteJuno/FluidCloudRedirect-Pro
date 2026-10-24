@@ -357,15 +357,22 @@ object PackageSwapEngine {
     }
 
     /**
-     * 逐个方案试改,每个都先在**副本**上校验"真的能解析到一个可启动的 Activity",通过了才动真身。
+     * 逐个方案试改,每个都先在**副本**上校验"目标真的接得住",通过了才动真身。
      *
      * 为什么必须逐级校验:1.2.6 直接改真身,结果改写出来的意图启动失败,
      * metis 抛 ActivityNotFoundException 后自己吞掉,用户看到的是"点击完全没反应"——
      * 比原来跳应用商店更糟,而且日志里只有一行"已改写",看不出问题。
      *
-     * 校验两项:
-     *  1. `resolveActivity` 能解析到具体 Activity(不是 null);
-     *  2. 该 Activity 是 exported 的(非导出组件从外部 startActivity 会被拒)。
+     * 判据按方案性质分开(1.2.8 修正):
+     *  - `launcher`(只是把 App 拉起来):用 `getLaunchIntentForPackage`,1.2.5 起一直在用,
+     *    不受 Android 11+ 包可见性影响;
+     *  - 其余(带 data 的):先 `resolveActivity` + `exported`(最严格,能拿到具体组件就用它),
+     *    解析不到时再退一步问 `queryIntentActivities` —— 目标包里真有能接住这个意图的组件也算过关。
+     *
+     * 为什么 1.2.7 的做法要改:它用同一把尺子(resolveActivity + exported)量所有方案,
+     * 而 resolveActivity 对隐式意图存在**假阴性**。一旦三级降级被全判死,卡片就退回跳商店,
+     * 用户看到的还是"没修好"。两条判据都只认"目标里确实存在接收者",不放空,
+     * 所以放宽判定不会重新引入死卡。
      *
      * 全部方案都不合格时返回 false,调用方会原样放行 —— 卡片退回改造前的行为,
      * 而不是变成一张点不动的死卡。
@@ -387,15 +394,30 @@ object PackageSwapEngine {
                 setPackage(target)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            val activityInfo = runCatching {
-                context.packageManager.resolveActivity(trial, 0)?.activityInfo
-            }.getOrNull()
-            if (activityInfo == null) {
-                tried += "${plan.label}(unresolved)"
-                continue
+            val activityInfo = if (plan.viaLauncher) {
+                null
+            } else {
+                runCatching {
+                    context.packageManager.resolveActivity(trial, 0)?.activityInfo
+                }.getOrNull()
             }
-            if (!activityInfo.exported) {
-                tried += "${plan.label}(not exported: ${activityInfo.packageName}/${activityInfo.name})"
+            val reject = when {
+                plan.viaLauncher && !BrowserAvailability.isLaunchable(context, target) ->
+                    "no launcher entry"
+
+                plan.viaLauncher -> null
+
+                activityInfo == null &&
+                    !BrowserAvailability.handlersForIntent(context, trial).contains(target) ->
+                    "unresolved"
+
+                activityInfo != null && !activityInfo.exported ->
+                    "not exported: ${activityInfo.packageName}/${activityInfo.name}"
+
+                else -> null
+            }
+            if (reject != null) {
+                tried += "${plan.label}($reject)"
                 continue
             }
 
@@ -406,7 +428,7 @@ object PackageSwapEngine {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             HookLog.log(
                 "Redirected install-prompt $from -> $target, via=$source, plan=${plan.label}, " +
-                    "activity=${activityInfo.packageName}/${activityInfo.name}, " +
+                    "activity=${activityInfo?.let { "${it.packageName}/${it.name}" } ?: "(launcher entry)"}, " +
                     "action=${intent.action}, data=${intent.dataString}"
             )
             return true

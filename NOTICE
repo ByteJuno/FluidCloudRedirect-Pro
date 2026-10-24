@@ -16,7 +16,7 @@ FluidCloudRedirect Pro — 归属与修改声明
   修改者    bamizi(https://github.com/bamizi)
   起算日期  2026-10-24
   基线版本  上游 v1.0.2(commit 见本仓库 git log 中上游提交)
-  当前版本  1.2.7
+  当前版本  1.2.8
 
   主要修改:
     1. 新增「自定义 URL → App 跳转规则」:域名(含子域名)/ URL 包含 / 正则三种匹配,
@@ -44,6 +44,10 @@ FluidCloudRedirect Pro — 归属与修改声明
        PendingIntent 钩子(其就地修改宿主 Intent 会破坏卡片),并把改写改为逐级校验
        可启动性(解析到的 Activity 必须存在且 exported),全部不合格时原样放行,
        避免产生点不动的死卡。
+   11. (1.2.8,2026-10-24) 修正第 10 条的判据:`resolveActivity` 对隐式意图存在假阴性,
+       会把四级降级方案全部判死从而退回跳商店。改为按方案性质分别判断——launcher 用
+       getLaunchIntentForPackage,带 data 的方案在 resolveActivity 失败时再用
+       queryIntentActivities 兜一次。放宽仍只认"目标里确实存在接收者",不重新引入死卡。
 
 许可与再分发
 ------------
