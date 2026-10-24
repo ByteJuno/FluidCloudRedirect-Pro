@@ -1,8 +1,10 @@
 package com.mo.fkLTY.engine
 
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Process
 import com.mo.fkLTY.hook.HookLog
 import org.json.JSONArray
 import org.json.JSONObject
@@ -401,6 +403,7 @@ object PackageSwapEngine {
                         "install-prompt[$source]: ${swap.from} missing, try redirect to ${swap.to}; " +
                             IntentInspector.describe(intent)
                     )
+                    warnIfBalWillBlock(context)
                     val shared = ClipboardShare.findUrl(context)
                     if (shared != null) {
                         HookLog.log("install-prompt[$source]: clipboard still holds a share link, use it")
@@ -410,6 +413,39 @@ object PackageSwapEngine {
             }
         }
         return false
+    }
+
+    /**
+     * 检查宿主有没有"后台启动"资格,没有就留一条能照着做的提示。
+     *
+     * 为什么需要:卡片的跳转是 metis 这个**后台服务**发起的,Android 10 起默认被拦,
+     * 系统返回 `BAL_BLOCK`(`result code=102`),表现是"点了完全没反应"——
+     * 而模块这边看起来一切正常(识别成功、改写成功),很容易被误判成"模块坏了"。
+     *
+     * AOSP 的豁免清单里有一条:调用方持有 `SYSTEM_ALERT_WINDOW` 即允许后台启动。
+     * 这个 AppOp 可以直接设,所以提示里直接给命令。
+     *
+     * 每进程只提示一次,避免刷屏。
+     */
+    private fun warnIfBalWillBlock(context: Context) {
+        val mode = runCatching {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(
+                AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                Process.myUid(),
+                context.packageName,
+            )
+        }.getOrNull()
+        if (mode != null && mode != AppOpsManager.MODE_ALLOWED) {
+            HookLog.once(
+                "bal-hint",
+                "提示: ${context.packageName} 缺少 SYSTEM_ALERT_WINDOW,后台启动会被系统拦掉" +
+                    "(BAL_BLOCK,结果码 102),表现就是点了没反应。执行:" +
+                    " su -c cmd appops set ${context.packageName} SYSTEM_ALERT_WINDOW allow" +
+                    " 然后强停本服务即可",
+            )
+        }
     }
 
     /**

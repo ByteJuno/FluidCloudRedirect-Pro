@@ -98,11 +98,38 @@ qklink://www.uc.cn/<hash>?action=open_url&url=https%3a%2f%2fpan.quark.cn%2fs%2f<
 
 1. 安装 APK,LSPosed 管理器中启用模块;
 2. 作用域确认包含「智慧决策服务」(scope.list 已默认声明;也可在应用内点「一键申请作用域」);
-3. 重启手机或 `adb shell am force-stop com.oplus.metis`;
-4. 应用内选择目标浏览器,或在「应用替换」里配置 A → B;设置通过 LSPosed 远程偏好下发,**即时生效**,无需重启 metis;
-5. 「禁用重定向」= 保持系统默认行为。
+3. **给 metis 开后台启动资格**(见下节,不开则"复制口令 → 打开网盘"这条会被系统拦掉);
+4. 重启手机或 `adb shell am force-stop com.oplus.metis`;
+5. 应用内选择目标浏览器,或在「应用替换」里配置 A → B;设置通过 LSPosed 远程偏好下发,**即时生效**,无需重启 metis;
+6. 「禁用重定向」= 保持系统默认行为。
 
-要求:Android 10+(minSdk 29)、支持 libxposed 新 API 的 LSPosed。
+要求:Android 10+(minSdk 29)、支持 libxposed 新 API 的 LSPosed、**root**。
+
+### 必须做:`SYSTEM_ALERT_WINDOW`
+
+流体云的点击跳转是 metis 这个**后台服务**发起的。Android 从 10 起禁止后台应用启动界面,
+系统返回 `BAL_BLOCK`(`result code=102`),表现为**点了完全没反应**——
+日志里长这样:
+
+```
+START u0 { … cmp=com.quark.clouddrive/com.ucpro.MainActivity mCallingUid=10132 }
+    from uid 10132 (com.oplus.metis) (BAL_BLOCK) result code=102
+```
+
+AOSP 的豁免清单里有一条:调用方持有 `SYSTEM_ALERT_WINDOW` 即允许后台启动。这个 AppOp 可以直接置：
+
+```sh
+su -c cmd appops set com.oplus.metis SYSTEM_ALERT_WINDOW allow
+```
+
+执行后强停一次 metis 或重启。撤销:
+
+```sh
+su -c cmd appops set com.oplus.metis SYSTEM_ALERT_WINDOW default
+```
+
+> 这个设置会写进 `/data/system/appops.xml`,重启后保留;卸载模块不会自动撤销它。
+> 不想每次手动设置的话,仓库使用的同一目录下有一个 `MetisBALAllow` 模块可开机自动执行这条命令。
 
 日志:LSPosed 管理器 → 日志,过滤 `FluidRedirect`;应用内可开「详细日志」。
 

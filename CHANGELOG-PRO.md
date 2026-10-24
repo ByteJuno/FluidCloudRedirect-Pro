@@ -1,5 +1,35 @@
 # FluidCloudRedirect Pro - 变更记录
 
+## 1.2.10（补上必需的系统前提，并让日志直接告诉你缺什么）
+
+1.2.9 修好 Intent 之后，真机上又出现"点了没反应"。这次日志把原因写得很清楚：
+
+```
+START u0 { … cmp=com.quark.clouddrive/com.ucpro.MainActivity mCallingUid=10132 }
+    from uid 10132 (com.oplus.metis)  (BAL_BLOCK)  result code=102
+```
+
+`cmp=` 出现说明 Intent 没问题了，`BAL_BLOCK` 说明卡在**后台启动限制**：
+流体云的跳转由 metis 这个后台服务发起，Android 10 起默认禁止。
+
+AOSP 的豁免清单里有一条"调用方持有 `SYSTEM_ALERT_WINDOW` 即允许后台启动"，
+这个 AppOp 可以直接设：
+
+```sh
+su -c cmd appops set com.oplus.metis SYSTEM_ALERT_WINDOW allow
+```
+
+本版做的改动：
+
+- **新增运行期提示**：改写前检查宿主的 `SYSTEM_ALERT_WINDOW`，不是 `allow` 就写一行
+  带命令的日志（每进程一次），不用再靠猜"为什么点了没反应"
+- README 新增「必须做：SYSTEM_ALERT_WINDOW」一节，附 `BAL_BLOCK` 日志样例与撤销命令
+- Release 说明的安装步骤补上这一步
+
+> 更正 1.2.9 发布说明里"那个 appop 不是原因"的说法——它是必需的。
+> 之前看不出来，是因为两个故障串联：Intent 解析失败（-91）挡在前面，
+> 根本走不到 BAL 这一步。详见仓库文档 §16。
+
 ## 1.2.9（真正的元凶：`launcher` 方案拼错了 Intent）
 
 前三版（1.2.6 / 1.2.7 / 1.2.8）都在改判据、改钩子、改校验，但真机上"点了没反应"始终没解决。
