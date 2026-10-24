@@ -44,8 +44,32 @@ LSPosed 模块,基于 **libxposed 新 API**(`io.github.libxposed:api:102.0.0`,mi
 
 | 包名 | 应用 | 说明 |
 |---|---|---|
-| `com.quark.clouddrive` | 夸克网盘（独立版） | 2026-02 从夸克主 App 分离出来的独立应用，厂商「广州市动悦信息技术」。目标就是它 |
+| `com.quark.clouddrive` | 夸克网盘（独立 App） | 网盘专用客户端。目标就是它 |
 | `com.quark.browser` | 夸克（主 App） | 浏览器 + 内置网盘。选它只会打开浏览器界面，不是网盘原生页 |
+
+本机实际装了哪些，用 `adb shell pm list packages | grep quark` 一看便知，别照抄网上的旧教程。
+
+### 源 App 卸载之后
+
+只装夸克网盘、不装夸克时，metis 不再产出"打开夸克"的意图，而是换成"去安装夸克"的卡片，
+点它发出的是商店意图：
+
+```
+action=VIEW  data=market://details?id=com.quark.browser   （package 为空或为商店）
+```
+
+这种意图的目标包是商店、不是源包，所以按包名匹配天然不命中，点击会落到应用商店。
+1.2.6 起会把这类"引导安装源 App"的意图接住，照样改投到 B：
+
+| 优先级 | 落地方式 | 日志 |
+|---|---|---|
+| 1 | 剪贴板里还留着分享地址，直接用它打开分享页 | `plan=shared-link:https://…` |
+| 2 | 原始数据原样给 | `plan=keep-data` |
+| 3 | 从内嵌参数里拆出地址 | `plan=nested-url:…` |
+| 4 | 只把 B 拉起来 | `plan=launcher` |
+
+第 1 级能命中时体验最好；Android 10+ 后台读不到剪贴板属正常，会退到第 4 级——
+表现为"打开了夸克网盘"，但不会自动进到那条分享。
 
 ### 三级降级：为什么不是"认不认"二选一
 

@@ -1,5 +1,37 @@
 # FluidCloudRedirect Pro - 变更记录
 
+## 1.2.6（卸载源 App 后仍能跳转）
+
+真机反馈：夸克和夸克网盘都装着时，复制口令点卡片能跳到夸克网盘；**一旦卸载夸克**，
+卡片变成"去安装夸克"，点它跳到应用商店。
+
+根因不在改写逻辑，而在上游链路断得更早：卸载源 App 后 metis 根本不再产出
+`package=com.quark.browser` 的跳转意图，而是发出一个商店意图
+
+```
+action=VIEW  data=market://details?id=com.quark.browser   （package 为空或为商店）
+```
+
+此时目标包是商店、不是源包，按 from 匹配的应用替换天然不命中；它也不是网页数据，
+兜底钩子的 `hasWebData` 预筛同样放过——两道判定都落空，Intent 原样进应用商店。
+
+新增「引导安装拦截」：
+
+- `engine/StoreLink.kt`：纯 JVM 判定"这是不是一次引导安装"。识别 `market://`、
+  `oaps://` 等商店协议、常见商店包名、商店域名，再结合 data 与 extras 里是否提到源包名。
+  三种结论：无关 / 只是提到（只留痕） / 确认引导安装（改写）。
+  只提到不改写，是为了不误伤"网页内容里恰好出现这个包名"的正常跳转。
+- `engine/PackageSwap.kt`：`redirectInstallPrompt()` 把命中的商店意图改写成打开替换目标。
+  落地优先级：剪贴板里的分享地址 > 原始 data > 内嵌地址 > 仅启动 App。
+- `engine/ClipboardShare.kt`：卸载源 App 后，真实分享地址在链路上已经不存在了，
+  但用户刚复制的口令往往还在剪贴板。能读到就直接用它落到分享页，读不到就退化为拉起 App。
+  Android 10+ 后台读不到剪贴板属正常，不影响主流程。
+- `RedirectEngine.applyToIntent`：这项检查放在 `hasWebData` 预筛**之前**，否则必然漏过。
+- 新增 `StoreLinkTest` 10 项：商店意图、显式商店包、商店网页、仅 extras 命中、
+  无关商店意图、正常跳转不被抢、纯分享链接不动、非商店网页只留痕、包名/协议匹配的大小写。
+
+单测 24 → 34 项，全部通过。
+
 ## 1.2.5（署名落定）
 
 - `NOTICE` 的修改者、`README` 的 Modifications Copyright 填入实际维护者 `bamizi`。

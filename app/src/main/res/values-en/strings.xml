@@ -51,6 +51,7 @@
     <string name="about_intro">Rewrites the jump target at the fluid-cloud card execution layer. Settings apply instantly — no need to restart the Smart Decision Service.</string>
     <string name="about_usage_browser">Web cards: pick a browser above and the card is sent there instead.</string>
     <string name="about_usage_swap">Share codes: copy a Quark share code elsewhere, tap the card in the fluid cloud, then set com.quark.browser → com.quark.clouddrive under App swap to open Quark Drive.</string>
+    <string name="about_usage_uninstalled">No config change needed after uninstalling the original app: when the card turns into an "install" prompt, it is still routed to the swap target instead of the app store.</string>
     <string name="about_note">After installing or updating, stop com.oplus.metis once (or reboot) so the hooks load.</string>
     <string name="about_version">%1$s (%2$s)</string>
 </resources>

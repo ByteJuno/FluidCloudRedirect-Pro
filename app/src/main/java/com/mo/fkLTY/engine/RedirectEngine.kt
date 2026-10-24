@@ -38,6 +38,11 @@ object RedirectEngine {
         // ---- 兜底修复:包名已经是替换目标,但 data 目标接不住(metis 用 bean 包名重建了 Intent) ----
         if (pkg != null && PackageSwapEngine.repairIfNeeded(context, intent, pkg, prefs, source)) return true
 
+        // ---- 「去商店安装源 App」的卡片:卸载源 App 后 metis 不再产出正常跳转意图 ----
+        // 必须放在下面的 hasWebData 预筛之前:商店意图既不是网页数据,目标包也不是源包,
+        // 用原来的条件一定漏过去,点击就直接进了应用商店。
+        if (PackageSwapEngine.redirectInstallPrompt(context, intent, prefs, source)) return true
+
         val data = intent.dataString
         // 便宜的预筛,避免对每一次 startActivity 都跑完整解析:
         // http(s) 直链、heytapbrowser:// 协议卡、以及 qklink:// 这类把地址藏在 url= 参数里的包装协议

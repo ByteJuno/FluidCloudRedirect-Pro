@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  A 主:TextIntent.invoke(Context)                 —— 行为咽喉
  *  B 冗余:SchemeData/WebData.parseIntent(Context)  —— packageName 产生点,卡片 UI 同步变对
  *  C 监控:ZoomOpenHandler.startByZoom(仅记录)     —— 未来旁路预警
+ *  D 兜底:ContextImpl.startActivity                —— metis 自己现场发出跳转时
+ *  E 兜底:PendingIntent.getActivity/getActivities  —— 点击由卡片宿主代发时,在创建时刻改写
  */
 class MainHook : XposedModule() {
 
@@ -70,6 +72,7 @@ class MainHook : XposedModule() {
             // 兜底层:任何 metis 进程都装上,覆盖"卡片不走 TextIntent.invoke"的分支
             if (installedLaunch.compareAndSet(false, true)) {
                 installLaunchHook(classLoader)
+                installPendingIntentHooks(classLoader)
             }
 
             if (!procName.endsWith(TARGET_PROCESS_SUFFIX)) return
@@ -114,6 +117,37 @@ class MainHook : XposedModule() {
         }
         if (installedCount > 0) {
             HookLog.log("Hook installed: ContextImpl.startActivity ($installedCount overloads)")
+        }
+    }
+
+    /**
+     * 兜底钩 `PendingIntent.getActivity/getActivities`:卡片若由 SystemUI 代发点击,
+     * metis 进程里不会出现 startActivity 调用,只能在"创建 PendingIntent"这一刻改写内层 Intent。
+     */
+    private fun installPendingIntentHooks(classLoader: ClassLoader) {
+        val cls = try {
+            Class.forName(CLASS_PENDING_INTENT, false, classLoader)
+        } catch (t: Throwable) {
+            HookLog.once("fail:pendingcls", "Cannot load PendingIntent: ${t.javaClass.simpleName}: ${t.message}")
+            return
+        }
+        var installedCount = 0
+        // 每种方法试 4/5 参数两种签名(Bundle 版)以及 Intent[] 版(getActivities)
+        PENDING_SIGNATURES.forEachIndexed { index, (name, sig) ->
+            try {
+                val method = cls.getDeclaredMethod(name, *sig)
+                hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept(PendingIntentHooker("pending:${name}#$index"))
+                installedCount++
+            } catch (_: Throwable) {
+                // 该重载在本机型不存在,属正常情况,不必刷日志
+            }
+        }
+        if (installedCount > 0) {
+            HookLog.log("Hook installed: PendingIntent.getActivity/getActivities ($installedCount overloads)")
+        } else {
+            HookLog.once("fail:pendingall", "No PendingIntent overload could be hooked")
         }
     }
 
@@ -171,6 +205,15 @@ class MainHook : XposedModule() {
         private const val CLASS_TEXT_INTENT = "com.oplus.textintent.distribution.bean.TextIntent"
         private const val CLASS_ZOOM_HANDLER = "com.oplus.textintent.common.utils.ZoomOpenHandler"
         private const val CLASS_CONTEXT_IMPL = "android.app.ContextImpl"
+        private const val CLASS_PENDING_INTENT = "android.app.PendingIntent"
+
+        /** PendingIntent 的四种工厂重载:Intent / Intent[] × 无 Bundle / 带 Bundle */
+        private val PENDING_SIGNATURES: List<Pair<String, Array<Class<*>>>> = listOf(
+            "getActivity" to arrayOf(Context::class.java, Int::class.javaPrimitiveType!!, Intent::class.java, Int::class.javaPrimitiveType!!),
+            "getActivity" to arrayOf(Context::class.java, Int::class.javaPrimitiveType!!, Intent::class.java, Int::class.javaPrimitiveType!!, Bundle::class.java),
+            "getActivities" to arrayOf(Context::class.java, Int::class.javaPrimitiveType!!, Array<Intent>::class.java, Int::class.javaPrimitiveType!!),
+            "getActivities" to arrayOf(Context::class.java, Int::class.javaPrimitiveType!!, Array<Intent>::class.java, Int::class.javaPrimitiveType!!, Bundle::class.java),
+        )
         private val PARSE_INTENT_CLASSES = arrayOf(
             "com.oplus.textintent.distribution.bean.SchemeData",
             "com.oplus.textintent.distribution.bean.WebData",

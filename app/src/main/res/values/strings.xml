@@ -52,6 +52,7 @@
     <string name="about_intro">在流体云卡片执行层改写跳转目标。改配置即时生效,无需重启智慧决策服务。</string>
     <string name="about_usage_browser">网页卡片:在上面选一个浏览器,卡片就改投给它。</string>
     <string name="about_usage_swap">复制口令:在别处复制夸克分享口令,回到流体云点卡片;到「应用替换」填 com.quark.browser → com.quark.clouddrive,就会打开夸克网盘。</string>
+    <string name="about_usage_uninstalled">原 App 卸载后也不用改配置:卡片变成「去安装」时,同样会改投到替换目标,不会跳应用商店。</string>
     <string name="about_note">首次安装或升级后,需停一次 com.oplus.metis(或重启手机),钩子才会加载。</string>
     <string name="about_version">%1$s (%2$s)</string>
 </resources>

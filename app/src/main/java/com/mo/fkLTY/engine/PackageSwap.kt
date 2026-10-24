@@ -103,10 +103,30 @@ object PackageSwapEngine {
      *  1. keep-data     原始 data 原样给(目标认识这个私有协议时最精确)
      *  2. nested-url    从 ?url= 里挖出真实 https 地址,当普通链接打开(最理想)
      *  3. launcher      清空 data,ACTION_MAIN + LAUNCHER,只把 App 拉起来
+     *
+     * @param preferredUrl 已知的更好落地地址(目前只有"引导安装"路径从剪贴板捞到分享链接时会传)。
+     *                     有它时插到最前面,优先级高于上面三级——因为原始 intent 里的 data
+     *                     是个 market:// 商店链接,对目标 App 毫无意义。
      */
-    private fun plans(intent: Intent, target: String): List<Plan> {
+    private fun plans(intent: Intent, target: String, preferredUrl: String? = null): List<Plan> {
         val original = intent.dataString
         return buildList {
+            if (preferredUrl != null) {
+                val uri = Uri.parse(preferredUrl)
+                add(
+                    Plan(
+                        label = "shared-link:$preferredUrl",
+                        probe = Intent(Intent.ACTION_VIEW, uri).setPackage(target),
+                        mutate = {
+                            runCatching { it.categories?.clear() }
+                            it.action = Intent.ACTION_VIEW
+                            it.type = null        // setType 内部会把 data 置空,统一先清 type
+                            it.data = uri
+                        },
+                    )
+                )
+            }
+
             if (original != null) {
                 add(
                     Plan(
@@ -158,8 +178,12 @@ object PackageSwapEngine {
     }
 
     /** 在降级链里挑第一个目标 App 接得住的方案 */
-    private fun pickPlan(context: Context, intent: Intent, target: String): Plan? =
-        plans(intent, target).firstOrNull { it.resolvable(context, target) }
+    private fun pickPlan(
+        context: Context,
+        intent: Intent,
+        target: String,
+        preferredUrl: String? = null,
+    ): Plan? = plans(intent, target, preferredUrl).firstOrNull { it.resolvable(context, target) }
 
     /**
      * 兜底修复:包名**已经是替换目标**,但身上带的 data 目标接不住。
@@ -257,5 +281,119 @@ object PackageSwapEngine {
                 "action=${intent.action}, data=${intent.dataString}"
         )
         return true
+    }
+
+    /**
+     * 「去商店安装源 App」的拦截。
+     *
+     * 为什么需要:卸载夸克之后 metis 不再产出 `package=com.quark.browser` 的跳转意图,
+     * 卡片变成"去安装夸克",点击发出的是 `market://details?id=com.quark.browser` 这类商店意图。
+     * 此时目标包是商店、不是源包,按 from 匹配的应用替换天然不命中,点击就落到应用商店。
+     * 这里把"引导安装源 App"的意图接住,改成打开替换目标。
+     *
+     * 落地优先级:剪贴板里的分享地址 > 原始数据原样 > 内嵌地址 > 只启动 App。
+     * 剪贴板往往还留着用户刚复制的口令,能用就用,这样能直接落到分享页而不只是拉起 App。
+     *
+     * @return true 表示 Intent 已被改写
+     */
+    fun redirectInstallPrompt(
+        context: Context,
+        intent: Intent,
+        prefs: android.content.SharedPreferences,
+        source: String,
+    ): Boolean {
+        val swaps = load(prefs).filter { it.enabled && it.from != it.to }
+        if (swaps.isEmpty()) return false
+        // 便宜预筛:既没有 data 也没有 extras/clip,不可能提到任何包名,直接放行
+        if (intent.data == null && intent.extras == null && intent.clipData == null) return false
+
+        val target = intent.`package` ?: intent.component?.packageName
+        val data = intent.data
+        val blobs by lazy { intentBlobs(intent) }
+
+        for (swap in swaps) {
+            val verdict = StoreLink.classify(
+                targetPackage = target,
+                dataString = intent.dataString,
+                scheme = data?.scheme,
+                host = data?.host,
+                blobs = blobs,
+                fromPackage = swap.from,
+            )
+            when (verdict) {
+                StoreLink.Verdict.NONE -> continue
+
+                StoreLink.Verdict.MENTIONS_ONLY -> {
+                    // 提到了源包名但不是商店意图:留痕但不动,避免误伤正常跳转
+                    HookLog.card(
+                        "install-miss[$source]: mentions ${swap.from} but not a store intent; " +
+                            IntentInspector.describe(intent)
+                    )
+                    continue
+                }
+
+                StoreLink.Verdict.INSTALL_PROMPT -> {
+                    if (swap.to == target) return false
+                    if (!BrowserAvailability.isAvailable(context, swap.to)) {
+                        HookLog.once(
+                            "install-missing:${swap.to}",
+                            "Install-prompt for ${swap.from} seen, but swap target ${swap.to} is missing; skip",
+                        )
+                        continue
+                    }
+                    HookLog.card(
+                        "install-prompt[$source]: ${swap.from} missing, redirect to ${swap.to}; " +
+                            IntentInspector.describe(intent)
+                    )
+                    val shared = ClipboardShare.findUrl(context)
+                    if (shared != null) {
+                        HookLog.log("install-prompt[$source]: clipboard still holds a share link, use it")
+                    }
+                    val plan = pickPlan(context, intent, swap.to, shared) ?: run {
+                        HookLog.once(
+                            "install-unresolved:${swap.to}",
+                            "Install-prompt redirect failed: ${swap.to} unreachable; skip",
+                        )
+                        return false
+                    }
+                    intent.component = null
+                    intent.selector = null
+                    plan.mutate(intent)
+                    intent.setPackage(swap.to)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    HookLog.log(
+                        "Redirected install-prompt ${swap.from} -> ${swap.to}, via=$source, " +
+                            "plan=${plan.label}, action=${intent.action}, data=${intent.dataString}"
+                    )
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /** 收集 Intent 里所有可能承载包名的文本(clipData + extras),用于识别引导安装意图 */
+    private fun intentBlobs(intent: Intent, limit: Int = 12): List<String> {
+        val out = ArrayList<String>(limit)
+        runCatching {
+            intent.clipData?.let { clip ->
+                for (i in 0 until minOf(clip.itemCount, 4)) {
+                    val item = clip.getItemAt(i) ?: continue
+                    val text = item.text?.toString() ?: item.uri?.toString() ?: continue
+                    out += text.take(400)
+                }
+            }
+            intent.extras?.let { bundle ->
+                for (key in bundle.keySet()) {
+                    if (out.size >= limit) break
+                    when (val value = runCatching { bundle.get(key) }.getOrNull()) {
+                        is CharSequence -> out += value.toString().take(400)
+                        is Uri -> out += value.toString().take(400)
+                        else -> Unit
+                    }
+                }
+            }
+        }
+        return out
     }
 }

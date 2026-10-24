@@ -50,7 +50,8 @@ object IntentInspector {
         return null
     }
 
-    private fun findUrl(text: String?): String? {
+    /** 从任意一段文本里抓第一个合法 http(s) 地址（含包装协议内嵌地址、百分号编码、正则兜底） */
+    internal fun findUrl(text: String?): String? {
         if (text.isNullOrBlank()) return null
         // 整段文本本身就是包装型协议
         Policy.extractHttpUrl(text)?.let { return it }

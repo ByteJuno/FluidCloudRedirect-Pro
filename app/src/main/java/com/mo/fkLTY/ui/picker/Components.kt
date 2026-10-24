@@ -284,6 +284,7 @@ fun AboutCard(versionName: String, packageName: String, modifier: Modifier = Mod
             )
             UsageLine(stringResource(R.string.about_usage_browser))
             UsageLine(stringResource(R.string.about_usage_swap))
+            UsageLine(stringResource(R.string.about_usage_uninstalled))
             Text(
                 stringResource(R.string.about_note),
                 style = MaterialTheme.typography.bodySmall,
