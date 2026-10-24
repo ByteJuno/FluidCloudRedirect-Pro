@@ -66,9 +66,14 @@ android {
 
     buildTypes {
         release {
+            // 开启 R8（不开会把 Compose 图标库整个打进包，42 MB 里绝大部分是没被引用的图标）
             optimization {
                 enable = true
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             if (keystoreProps.isNotEmpty()) {
                 signingConfig = signingConfigs.getByName("release")
             }
