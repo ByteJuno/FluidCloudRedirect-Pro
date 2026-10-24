@@ -34,18 +34,28 @@ jobs:
           java-version: '25'
           cache: gradle
 
+      # runner 镜像自带 Android SDK(ANDROID_HOME=/usr/local/lib/android/sdk)。
+      # 不再用 android-actions/setup-android@v3:该步骤实测直接失败、后续全被跳过,
+      # 而 runner 自带的 SDK 够用——少一个第三方 action 就少一处不确定。
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      # compileSdk=37（Android 17）。runner 自带的 SDK 不一定有该平台，先尝试安装；
-      # 装不上也不让这一步失败，后面 Gradle 会给出明确报错。
-      - name: Install Android platform 37
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          for pkg in "platforms;android-37" "platforms;android-37.0" "build-tools;37.0.0"; do
-            sdkmanager --install "$pkg" > /dev/null 2>&1 || echo "skip $pkg"
-          done
-          sdkmanager --list_installed || true
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [ ! -d "$SDK" ]; then echo "::error::Android SDK not found at $SDK"; exit 1; fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "SDK = $SDK"
+          ls "$SDK"
+
+      # compileSdk 37 对应的平台目录是 android-37.0。
+      # 公共 SDK 仓库里**没有** "platforms;android-37",只有 37.0 / 37.1 / 37.2,
+      # 包名写错会一直 skip,然后 Gradle 报 "failed to find target with hash string android-37"。
+      - name: Install Android platform 37.0
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$SDK/cmdline-tools/latest/bin:$SDK/tools/bin:$PATH"
+          yes | sdkmanager --sdk_root="$SDK" --licenses > /dev/null 2>&1 || true
+          sdkmanager --sdk_root="$SDK" --install "platforms;android-37.0" "build-tools;37.0.0"
+          sdkmanager --sdk_root="$SDK" --list_installed
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
